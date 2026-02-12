@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+    <meta charset="utf-8">
+    <meta content="text/html; charset=utf-8" http-equiv="Content-Type">
+    <title>GET YOKED</title>
+    <style>
+      html, body {
+          margin: 0;
+          padding: 0;
+          overflow: hidden;
+          width: 100%;
+          height: 100%;
+          background: #231F20;
+      }
+      #unity-container {
+          width: 100%;
+          height: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          position: relative;
+      }
+      #unity-canvas {
+          background: #231F20;
+      }
+      #unity-loading-bar {
+          position: absolute;
+          left: 50%;
+          top: 50%;
+          transform: translate(-50%, -50%);
+          display: none;
+          text-align: center;
+      }
+      #unity-logo {
+          width: 154px;
+          height: 130px;
+          background: url('TemplateData/unity-logo-dark.png') no-repeat center;
+          background-size: contain;
+      }
+      #unity-progress-bar-empty {
+          width: 141px;
+          height: 18px;
+          margin: 10px auto;
+          background: url('TemplateData/progress-bar-empty-dark.png') no-repeat center;
+          background-size: contain;
+      }
+      #unity-progress-bar-full {
+          width: 0%;
+          height: 18px;
+          background: url('TemplateData/progress-bar-full-dark.png') no-repeat center;
+          background-size: contain;
+      }
+      #unity-warning {
+          position: absolute;
+          top: 10px;
+          left: 50%;
+          transform: translateX(-50%);
+          z-index: 1000;
+          max-width: 90%;
+      }
+      .unity-mobile #unity-canvas {
+          width: 100%;
+          height: 100%;
+      }
+      #loading-status {
+          color: #fff;
+          font-family: Arial, sans-serif;
+          margin-top: 10px;
+          font-size: 14px;
+      }
+    </style>
+</head>
+<body>
+<div id="unity-container">
+    <canvas id="unity-canvas" tabindex="-1"></canvas>
+    <div id="unity-loading-bar">
+        <div id="unity-logo"></div>
+        <div id="unity-progress-bar-empty">
+            <div id="unity-progress-bar-full"></div>
+        </div>
+        <div id="loading-status">Loading...</div>
+    </div>
+    <div id="unity-warning"></div>
+</div>
+<script>
+    var canvas = document.querySelector("#unity-canvas");
+    var loadingStatus = document.querySelector("#loading-status");
+
+    function unityShowBanner(msg, type) {
+        var warningBanner = document.querySelector("#unity-warning");
+        function updateBannerVisibility() {
+            warningBanner.style.display = warningBanner.children.length ? 'block' : 'none';
+        }
+        var div = document.createElement('div');
+        div.innerHTML = msg;
+        warningBanner.appendChild(div);
+        if (type == 'error') div.style = 'background: red; padding: 10px; color: white; border-radius: 5px;';
+        else {
+            if (type == 'warning') div.style = 'background: yellow; padding: 10px; border-radius: 5px;';
+            setTimeout(function () {
+                warningBanner.removeChild(div);
+                updateBannerVisibility();
+            }, 5000);
+        }
+        updateBannerVisibility();
+    }
+
+    function updateStatus(message) {
+        if (loadingStatus) {
+            loadingStatus.textContent = message;
+        }
+        console.log(message);
+    }
+
+    // Function to merge split files
+    async function mergeParts(basePath, partCount) {
+        try {
+            updateStatus(`Merging ${basePath}...`);
+            const parts = [];
+            for (let i = 1; i <= partCount; i++) {
+                parts.push(`${basePath}.part${i}`);
+            }
+            
+            const chunks = await Promise.all(
+                parts.map(url => fetch(url).then(r => {
+                    if (!r.ok) throw new Error(`Failed to fetch ${url}`);
+                    return r.arrayBuffer();
+                }))
+            );
+            
+            const totalLength = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+            const merged = new Uint8Array(totalLength);
+            let offset = 0;
+            
+            for (const chunk of chunks) {
+                merged.set(new Uint8Array(chunk), offset);
+                offset += chunk.byteLength;
+            }
+            
+            return merged;
+        } catch (error) {
+            console.error(`Error merging ${basePath}:`, error);
+            throw error;
+        }
+    }
+
+    // Custom stream loader that intercepts requests for split files
+    function setupCustomLoader() {
+        const originalFetch = window.fetch;
+        const mergedFiles = {};
+
+        window.fetch = async function(url, options) {
+            // Check if this is a request for a file that has parts
+            if (typeof url === 'string') {
+                // Handle WASM file
+                if (url.includes('Web.wasm') && !url.includes('.part')) {
+                    if (!mergedFiles['Web.wasm']) {
+                        updateStatus('Merging WASM files...');
+                        const merged = await mergeParts('Build/Web.wasm', 3);
+                        const blob = new Blob([merged], { type: 'application/wasm' });
+                        mergedFiles['Web.wasm'] = blob;
+                    }
+                    return new Response(mergedFiles['Web.wasm']);
+                }
+                
+                // Handle Master.bank file
+                if (url.includes('Master.bank') && !url.includes('.part') && !url.includes('.strings')) {
+                    if (!mergedFiles['Master.bank']) {
+                        updateStatus('Merging audio bank files...');
+                        const merged = await mergeParts('StreamingAssets/Master.bank', 2);
+                        const blob = new Blob([merged]);
+                        mergedFiles['Master.bank'] = blob;
+                    }
+                    return new Response(mergedFiles['Master.bank']);
+                }
+            }
+            
+            // Default fetch for all other files
+            return originalFetch.apply(this, arguments);
+        };
+    }
+
+    var buildUrl = "Build";
+    var loaderUrl = buildUrl + "/Web.loader.js";
+
+    // Detect mobile
+    if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+        var meta = document.createElement('meta');
+        meta.name = 'viewport';
+        meta.content = 'width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, shrink-to-fit=yes';
+        document.getElementsByTagName('head')[0].appendChild(meta);
+        document.querySelector("#unity-container").className = "unity-mobile";
+        canvas.className = "unity-mobile";
+    } else {
+        canvas.style.width = "960px";
+        canvas.style.height = "600px";
+    }
+
+    document.querySelector("#unity-loading-bar").style.display = "block";
+
+    // Initialize the game
+    (async function() {
+        try {
+            updateStatus('Preparing game files...');
+            
+            // Setup custom loader to intercept split file requests
+            setupCustomLoader();
+            
+            var config = {
+                arguments: [],
+                dataUrl: buildUrl + "/Web.data",
+                frameworkUrl: buildUrl + "/Web.framework.js",
+                codeUrl: buildUrl + "/Web.wasm",
+                streamingAssetsUrl: "StreamingAssets",
+                companyName: "Barking Dogs",
+                productName: "GET YOKED",
+                productVersion: "0.2.1",
+                showBanner: unityShowBanner,
+            };
+
+            updateStatus('Loading Unity engine...');
+            var script = document.createElement("script");
+            script.src = loaderUrl;
+            script.onload = () => {
+                updateStatus('Initializing game...');
+                createUnityInstance(canvas, config, (progress) => {
+                    document.querySelector("#unity-progress-bar-full").style.width = 100 * progress + "%";
+                    updateStatus(`Loading: ${Math.round(progress * 100)}%`);
+                }).then((unityInstance) => {
+                    document.querySelector("#unity-loading-bar").style.display = "none";
+                    console.log('Game loaded successfully!');
+                }).catch((message) => {
+                    console.error('Unity initialization error:', message);
+                    alert('Failed to initialize game: ' + message);
+                });
+            };
+            script.onerror = () => {
+                alert('Failed to load Unity loader script');
+            };
+            document.body.appendChild(script);
+            
+        } catch (error) {
+            console.error('Game loading error:', error);
+            alert('Failed to load game: ' + error.message);
+        }
+    })();
+</script>
+</body>
+</html>
